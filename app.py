@@ -2,13 +2,14 @@ import os
 import json
 import sqlite3
 import secrets
+import hashlib
 from datetime import datetime, timezone
 from functools import wraps
 from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, Response, abort
 from openai import OpenAI
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+app.secret_key = os.environ.get('SECRET_KEY') or hashlib.sha256(('dean-session-v1:' + os.environ['OPENAI_API_KEY']).encode('utf-8')).hexdigest()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', MAX_CONTENT_LENGTH=40_000)
 client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
 DB_PATH = os.environ.get('DB_PATH', '/tmp/dean.sqlite3')
