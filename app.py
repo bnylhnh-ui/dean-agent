@@ -12,29 +12,57 @@ from datetime import datetime, timezone
 
 from functools import wraps
 
-from flask import Flask, request, render_template_string, session, redirect, url_for, jsonify, Response, abort
+from flask import (
+
+    Flask,
+
+    request,
+
+    render_template_string,
+
+    session,
+
+    redirect,
+
+    url_for,
+
+    jsonify,
+
+    Response,
+
+    abort,
+
+)
 
 from openai import OpenAI
 
-app = Flask(__name__)
+# ============================================================
 
-# Single-owner app: the owner id survives browser/cookie resets.
+# DEAN - Personal Assistant
+
+# ============================================================
+
+app = Flask(__name__)
 
 OWNER_ID = os.environ.get("DEAN_OWNER_ID", "owner")
 
-secret = os.environ.get("SECRET_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-if not secret:
+if not OPENAI_API_KEY:
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    raise RuntimeError("Set OPENAI_API_KEY in Render Environment")
 
-    if not api_key:
+SECRET_KEY = os.environ.get("SECRET_KEY")
 
-        raise RuntimeError("Set OPENAI_API_KEY in Render Environment")
+if not SECRET_KEY:
 
-    secret = hashlib.sha256(("dean-session-v2:" + api_key).encode()).hexdigest()
+    SECRET_KEY = hashlib.sha256(
 
-app.secret_key = secret
+        ("dean-session-v3:" + OPENAI_API_KEY).encode()
+
+    ).hexdigest()
+
+app.secret_key = SECRET_KEY
 
 app.config.update(
 
@@ -48,17 +76,29 @@ app.config.update(
 
 )
 
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+MODEL = os.environ.get(
 
-# IMPORTANT:
+    "OPENAI_MODEL",
 
-# On Render, set DB_PATH to a path on a Persistent Disk,
+    "gpt-5.6-luna"
 
-# for example /data/dean.sqlite3.
+)
 
-DB_PATH = os.environ.get("DB_PATH", "/data/dean.sqlite3")
+DB_PATH = os.environ.get(
+
+    "DB_PATH",
+
+    "/data/dean.sqlite3"
+
+)
+
+# ============================================================
+
+# DATABASE
+
+# ============================================================
 
 def db():
 
@@ -68,11 +108,21 @@ def db():
 
         os.makedirs(parent, exist_ok=True)
 
-    con = sqlite3.connect(DB_PATH, timeout=15)
+    con = sqlite3.connect(
+
+        DB_PATH,
+
+        timeout=30,
+
+        check_same_thread=False
+
+    )
 
     con.row_factory = sqlite3.Row
 
-    con.execute("PRAGMA busy_timeout=15000")
+    con.execute("PRAGMA busy_timeout=30000")
+
+    con.execute("PRAGMA journal_mode=WAL")
 
     con.execute("""
 
@@ -92,11 +142,13 @@ def db():
 
     """)
 
-    con.execute(
+    con.execute("""
 
-        "CREATE INDEX IF NOT EXISTS msg_user_idx ON messages(user_id,id)"
+        CREATE INDEX IF NOT EXISTS msg_user_idx
 
-    )
+        ON messages(user_id, id)
+
+    """)
 
     con.execute("""
 
@@ -111,6 +163,14 @@ def db():
             created TEXT NOT NULL
 
         )
+
+    """)
+
+    con.execute("""
+
+        CREATE INDEX IF NOT EXISTS note_user_idx
+
+        ON notes(user_id, id)
 
     """)
 
@@ -132,13 +192,25 @@ def db():
 
     """)
 
+    con.execute("""
+
+        CREATE INDEX IF NOT EXISTS task_user_idx
+
+        ON tasks(user_id, id)
+
+    """)
+
+    con.commit()
+
     return con
 
+# ============================================================
+
+# SESSION / SECURITY
+
+# ============================================================
+
 def uid():
-
-    # Always use the same owner id.
-
-    # Browser cookies no longer create a new user.
 
     session["uid"] = OWNER_ID
 
@@ -166,7 +238,17 @@ def protected(fn):
 
         )
 
-        if not secrets.compare_digest(supplied, csrf()):
+        if not supplied:
+
+            abort(403)
+
+        if not secrets.compare_digest(
+
+            supplied,
+
+            csrf()
+
+        ):
 
             if request.path == "/chat":
 
@@ -186,25 +268,65 @@ def protected(fn):
 
 def now():
 
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(
+
+        timezone.utc
+
+    ).isoformat(
+
+        timespec="seconds"
+
+    )
+
+# ============================================================
+
+# MEMORY
+
+# ============================================================
 
 def save_note(content):
 
-    content = content.strip()
+    content = " ".join(
 
-    if not content or len(content) > 1000:
+        content.strip().split()
+
+    )
+
+    if not content:
 
         return False
 
-    with db() as con:
+    if len(content) > 1000:
 
-        # Don't save the exact same memory repeatedly.
+        return False
+
+    user = uid()
+
+    with db() as con:
 
         exists = con.execute(
 
-            "SELECT 1 FROM notes WHERE user_id=? AND content=? LIMIT 1",
+            """
 
-            (uid(), content),
+            SELECT 1
+
+            FROM notes
+
+            WHERE user_id=?
+
+            AND content=?
+
+            LIMIT 1
+
+            """,
+
+            (
+
+                user,
+
+                content
+
+            )
 
         ).fetchone()
 
@@ -216,13 +338,29 @@ def save_note(content):
 
             """
 
-            INSERT INTO notes(user_id,content,created)
+            INSERT INTO notes(
+
+                user_id,
+
+                content,
+
+                created
+
+            )
 
             VALUES(?,?,?)
 
             """,
 
-            (uid(), content, now()),
+            (
+
+                user,
+
+                content,
+
+                now()
+
+            )
 
         )
 
@@ -230,21 +368,19 @@ def save_note(content):
 
 def auto_remember(text):
 
-    """
+    text = " ".join(
 
-    Lightweight automatic memory.
+        text.strip().split()
 
-    It stores clear personal/preference statements,
+    )
 
-    rather than saving every sentence.
+    if not text:
 
-    """
+        return False
 
-    text = " ".join(text.split())
+    if len(text) > 1000:
 
-    if not text or len(text) > 1000:
-
-        return []
+        return False
 
     triggers = (
 
@@ -266,21 +402,15 @@ def auto_remember(text):
 
         "אני אוהבת",
 
-        "אני לא אוהב",
-
-        "אני לא אוהבת",
-
         "אני מעדיף",
 
         "אני מעדיפה",
 
-        "אני רוצה ש",
-
         "אני רוצה שת",
 
-        "חשוב לי ש",
+        "אני רוצה ש",
 
-        "תמיד ת",
+        "חשוב לי ש",
 
         "אל תשכח",
 
@@ -288,45 +418,1313 @@ def auto_remember(text):
 
     )
 
-    lower_text = text.lower()
+    lower = text.lower()
 
-    if not any(trigger in lower_text for trigger in triggers):
+    if not any(
 
-        return []
+        x in lower
 
-    candidates = []
+        for x in triggers
 
-    if lower_text.startswith(("תזכור", "תזכרי")):
+    ):
 
-        memory = (
+        return False
 
-            text.split(" ", 1)[1].strip()
+    if lower.startswith(
 
-            if " " in text
+        ("תזכור", "תזכרי")
 
-            else ""
+    ):
+
+        parts = text.split(
+
+            " ",
+
+            1
 
         )
+
+        if len(parts) == 2:
+
+            memory = parts[1].strip()
+
+        else:
+
+            memory = ""
 
     else:
 
         memory = text
 
-    if memory and len(memory) >= 3:
+    if not memory:
 
-        candidates.append(memory[:1000])
+        return False
 
-    saved = []
+    return save_note(memory)
 
-    for memory in candidates[:2]:
+# ============================================================
 
-        if save_note(memory):
+# TASKS
 
-            saved.append(memory)
+# ============================================================
 
-    return saved
+def add_task(content):
 
-HTML = """<!doctype html>
+    content = content.strip()
+
+    if not content:
+
+        return False
+
+    if len(content) > 500:
+
+        return False
+
+    with db() as con:
+
+        con.execute(
+
+            """
+
+            INSERT INTO tasks(
+
+                user_id,
+
+                content,
+
+                created
+
+            )
+
+            VALUES(?,?,?)
+
+            """,
+
+            (
+
+                uid(),
+
+                content,
+
+                now()
+
+            )
+
+        )
+
+    return True
+
+# ============================================================
+
+# COMMANDS
+
+# ============================================================
+
+def command_reply(message):
+
+    command, _, argument = message.partition(" ")
+
+    command = command.lower().strip()
+
+    argument = argument.strip()
+
+    if command in (
+
+        "/help",
+
+        "/commands"
+
+    ):
+
+        return (
+
+            "אני יכול לדבר איתך רגיל.\n\n"
+
+            "אפשר גם להשתמש בפקודות:\n"
+
+            "/status\n"
+
+            "/remember טקסט\n"
+
+            "/notes\n"
+
+            "/task טקסט\n"
+
+            "/tasks\n"
+
+            "/done מספר\n"
+
+            "/facebook נושא"
+
+        )
+
+    if command == "/status":
+
+        return (
+
+            "DEAN פעיל.\n"
+
+            "שיחה טבעית: פעילה\n"
+
+            "זיכרון: פעיל\n"
+
+            "היסטוריית שיחה: פעילה\n"
+
+            "פתקים: פעילים\n"
+
+            "משימות: פעילות\n"
+
+            "חיפוש אינטרנט: זמין למודל\n"
+
+            "פייסבוק אוטומטי: עדיין לא מחובר\n"
+
+            "שליטה באייפד: עדיין לא מחוברת"
+
+        )
+
+    if command == "/remember":
+
+        if not argument:
+
+            return "כתוב אחרי /remember מה אתה רוצה שאזכור."
+
+        if save_note(argument):
+
+            return "זכרתי."
+
+        return "המידע כבר שמור או שהוא ארוך מדי."
+
+    if command == "/notes":
+
+        with db() as con:
+
+            rows = con.execute(
+
+                """
+
+                SELECT id, content
+
+                FROM notes
+
+                WHERE user_id=?
+
+                ORDER BY id DESC
+
+                LIMIT 50
+
+                """,
+
+                (uid(),)
+
+            ).fetchall()
+
+        if not rows:
+
+            return "אין לי עדיין זיכרונות שמורים."
+
+        return "\n".join(
+
+            f"{r['id']}. {r['content']}"
+
+            for r in rows
+
+        )
+
+    if command == "/task":
+
+        if not argument:
+
+            return "כתוב אחרי /task את המשימה."
+
+        if add_task(argument):
+
+            return "הוספתי את המשימה."
+
+        return "לא הצלחתי להוסיף את המשימה."
+
+    if command == "/tasks":
+
+        with db() as con:
+
+            rows = con.execute(
+
+                """
+
+                SELECT id, content, done
+
+                FROM tasks
+
+                WHERE user_id=?
+
+                ORDER BY id DESC
+
+                LIMIT 50
+
+                """,
+
+                (uid(),)
+
+            ).fetchall()
+
+        if not rows:
+
+            return "אין כרגע משימות."
+
+        return "\n".join(
+
+            (
+
+                f"{r['id']}. "
+
+                f"{'✅' if r['done'] else '⬜'} "
+
+                f"{r['content']}"
+
+            )
+
+            for r in rows
+
+        )
+
+    if command == "/done":
+
+        if not argument.isdecimal():
+
+            return "כתוב /done ואחריו מספר משימה."
+
+        with db() as con:
+
+            cur = con.execute(
+
+                """
+
+                UPDATE tasks
+
+                SET done=1
+
+                WHERE id=?
+
+                AND user_id=?
+
+                """,
+
+                (
+
+                    int(argument),
+
+                    uid()
+
+                )
+
+            )
+
+        if cur.rowcount:
+
+            return "סימנתי את המשימה כבוצעה."
+
+        return "לא מצאתי את המשימה."
+
+    if command == "/facebook":
+
+        if not argument:
+
+            return "כתוב /facebook ואחריו נושא."
+
+        return (
+
+            "כתוב פוסט קצר וטבעי בעברית "
+
+            "לפייסבוק האישי שלי בנושא: "
+
+            + argument
+
+            + "."
+
+        )
+
+    return None
+
+# ============================================================
+
+# SYSTEM INSTRUCTIONS
+
+# ============================================================
+
+SYSTEM_INSTRUCTIONS = """
+
+אתה DEAN.
+
+אתה העוזר האישי של בניאל.
+
+הדבר החשוב ביותר הוא שיחה טבעית.
+
+אל תנהל את השיחה כמו תפריט.
+
+אל תציג רשימת אפשרויות אחרי כל הודעה.
+
+אל תשאל "איזה מהבאים אתה רוצה?" אם אפשר להבין את הכוונה מההקשר.
+
+דבר עם בניאל כמו עוזר אישי אמיתי:
+
+- קצר
+
+- ברור
+
+- טבעי
+
+- בעברית
+
+- ישיר
+
+- בלי סיפורים
+
+- בלי תפריטים מיותרים
+
+אם בניאל אומר משהו רגיל, פשוט תנהל איתו שיחה.
+
+אם הוא שואל שאלה, ענה עליה.
+
+אם הוא מבקש מידע עדכני, השתמש בחיפוש האינטרנט כאשר הוא זמין.
+
+אם אין לך מידע מספיק, תגיד את זה ולא תמציא.
+
+אם פעולה דורשת חיבור חיצוני שאין לך, אל תעמיד פנים שביצעת אותה.
+
+לעולם אל תגיד שביצעת פעולה אם בפועל לא ביצעת אותה.
+
+יש לך גישה לזיכרונות ולמשימות שנמסרו לך בהודעה.
+
+כאשר בניאל אומר בצורה ברורה שהוא רוצה שתזכור משהו,
+
+המערכת יכולה לשמור אותו בזיכרון.
+
+כאשר בניאל רק מספר משהו בשיחה,
+
+אל תהפוך כל משפט לזיכרון.
+
+אל תבקש סיסמאות או מפתחות API בשיחה.
+
+פעולות חיצוניות משמעותיות דורשות אישור מפורש.
+
+המטרה היא שבהמשך ניתן יהיה לחבר אליך:
+
+- חיפוש
+
+- קבצים
+
+- אימייל
+
+- יומן
+
+- פייסבוק
+
+- שירותים חיצוניים
+
+- APIs
+
+- אוטומציות
+
+- כלים נוספים
+
+כאשר כלי אינו מחובר, תגיד שהוא עדיין לא מחובר.
+
+"""
+
+# ============================================================
+
+# MAIN CHAT
+
+# ============================================================
+
+@app.post("/chat")
+
+@protected
+
+def chat():
+
+    message = request.form.get(
+
+        "message",
+
+        ""
+
+    ).strip()
+
+    if not message:
+
+        return jsonify(
+
+            error="הודעה ריקה"
+
+        ), 400
+
+    if len(message) > 6000:
+
+        return jsonify(
+
+            error="ההודעה ארוכה מדי"
+
+        ), 400
+
+    user = uid()
+
+    # ----------------------------------------
+
+    # Explicit commands only
+
+    # ----------------------------------------
+
+    if message.startswith("/"):
+
+        reply = command_reply(message)
+
+        if reply is not None:
+
+            with db() as con:
+
+                con.execute(
+
+                    """
+
+                    INSERT INTO messages(
+
+                        user_id,
+
+                        role,
+
+                        content,
+
+                        created
+
+                    )
+
+                    VALUES(?,?,?,?)
+
+                    """,
+
+                    (
+
+                        user,
+
+                        "user",
+
+                        message,
+
+                        now()
+
+                    )
+
+                )
+
+                con.execute(
+
+                    """
+
+                    INSERT INTO messages(
+
+                        user_id,
+
+                        role,
+
+                        content,
+
+                        created
+
+                    )
+
+                    VALUES(?,?,?,?)
+
+                    """,
+
+                    (
+
+                        user,
+
+                        "assistant",
+
+                        reply,
+
+                        now()
+
+                    )
+
+                )
+
+            return jsonify(
+
+                answer=reply,
+
+                memory_saved=False
+
+            )
+
+    # ----------------------------------------
+
+    # Automatic memory
+
+    # ----------------------------------------
+
+    memory_saved = auto_remember(
+
+        message
+
+    )
+
+    # ----------------------------------------
+
+    # Load context
+
+    # ----------------------------------------
+
+    with db() as con:
+
+        history = con.execute(
+
+            """
+
+            SELECT role, content
+
+            FROM messages
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 30
+
+            """,
+
+            (user,)
+
+        ).fetchall()[::-1]
+
+        notes = con.execute(
+
+            """
+
+            SELECT content
+
+            FROM notes
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 30
+
+            """,
+
+            (user,)
+
+        ).fetchall()
+
+        tasks = con.execute(
+
+            """
+
+            SELECT content, done
+
+            FROM tasks
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 50
+
+            """,
+
+            (user,)
+
+        ).fetchall()
+
+    memory_text = "\n".join(
+
+        "- " + n["content"]
+
+        for n in notes
+
+    )
+
+    task_text = "\n".join(
+
+        (
+
+            "- "
+
+            + (
+
+                "[בוצע] "
+
+                if t["done"]
+
+                else "[פתוח] "
+
+            )
+
+            + t["content"]
+
+        )
+
+        for t in tasks
+
+    )
+
+    instructions = (
+
+        SYSTEM_INSTRUCTIONS
+
+        + "\n\n"
+
+        + "הזיכרונות של בניאל:\n"
+
+        + (
+
+            memory_text
+
+            if memory_text
+
+            else "אין עדיין זיכרונות."
+
+        )
+
+        + "\n\n"
+
+        + "המשימות של בניאל:\n"
+
+        + (
+
+            task_text
+
+            if task_text
+
+            else "אין כרגע משימות."
+
+        )
+
+    )
+
+    # ----------------------------------------
+
+    # Build model input
+
+    # ----------------------------------------
+
+    model_input = []
+
+    for item in history:
+
+        role = item["role"]
+
+        if role not in (
+
+            "user",
+
+            "assistant"
+
+        ):
+
+            continue
+
+        model_input.append(
+
+            {
+
+                "role": role,
+
+                "content": item["content"]
+
+            }
+
+        )
+
+    model_input.append(
+
+        {
+
+            "role": "user",
+
+            "content": message
+
+        }
+
+    )
+
+    # ----------------------------------------
+
+    # OpenAI
+
+    # ----------------------------------------
+
+    try:
+
+        response = client.responses.create(
+
+            model=MODEL,
+
+            instructions=instructions,
+
+            tools=[
+
+                {
+
+                    "type": "web_search"
+
+                }
+
+            ],
+
+            input=model_input,
+
+            max_output_tokens=2000
+
+        )
+
+        answer = (
+
+            response.output_text.strip()
+
+            if response.output_text
+
+            else
+
+            "לא התקבלה תשובה. נסה שוב."
+
+        )
+
+    except Exception:
+
+        app.logger.exception(
+
+            "OpenAI request failed"
+
+        )
+
+        return jsonify(
+
+            error=(
+
+                "לא הצלחתי להתחבר "
+
+                "למודל כרגע. "
+
+                "נסה שוב."
+
+            )
+
+        ), 502
+
+    # ----------------------------------------
+
+    # Save conversation
+
+    # ----------------------------------------
+
+    with db() as con:
+
+        con.execute(
+
+            """
+
+            INSERT INTO messages(
+
+                user_id,
+
+                role,
+
+                content,
+
+                created
+
+            )
+
+            VALUES(?,?,?,?)
+
+            """,
+
+            (
+
+                user,
+
+                "user",
+
+                message,
+
+                now()
+
+            )
+
+        )
+
+        con.execute(
+
+            """
+
+            INSERT INTO messages(
+
+                user_id,
+
+                role,
+
+                content,
+
+                created
+
+            )
+
+            VALUES(?,?,?,?)
+
+            """,
+
+            (
+
+                user,
+
+                "assistant",
+
+                answer,
+
+                now()
+
+            )
+
+        )
+
+    return jsonify(
+
+        answer=answer,
+
+        memory_saved=bool(memory_saved)
+
+    )
+
+# ============================================================
+
+# HOME
+
+# ============================================================
+
+@app.get("/")
+
+def home():
+
+    user = uid()
+
+    with db() as con:
+
+        messages = con.execute(
+
+            """
+
+            SELECT role, content
+
+            FROM messages
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 60
+
+            """,
+
+            (user,)
+
+        ).fetchall()[::-1]
+
+        notes = con.execute(
+
+            """
+
+            SELECT id, content
+
+            FROM notes
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 50
+
+            """,
+
+            (user,)
+
+        ).fetchall()
+
+        tasks = con.execute(
+
+            """
+
+            SELECT id, content, done
+
+            FROM tasks
+
+            WHERE user_id=?
+
+            ORDER BY id DESC
+
+            LIMIT 50
+
+            """,
+
+            (user,)
+
+        ).fetchall()
+
+    last_answer = next(
+
+        (
+
+            m["content"]
+
+            for m in reversed(messages)
+
+            if m["role"] == "assistant"
+
+        ),
+
+        ""
+
+    )
+
+    return render_template_string(
+
+        HTML,
+
+        messages=messages,
+
+        notes=notes,
+
+        tasks=tasks,
+
+        csrf=csrf(),
+
+        last_answer=last_answer
+
+    )
+
+# ============================================================
+
+# CSRF
+
+# ============================================================
+
+@app.get("/csrf")
+
+def refresh_csrf():
+
+    uid()
+
+    return jsonify(
+
+        csrf=csrf()
+
+    )
+
+# ============================================================
+
+# NOTES
+
+# ============================================================
+
+@app.post("/notes")
+
+@protected
+
+def add_note():
+
+    content = request.form.get(
+
+        "content",
+
+        ""
+
+    ).strip()
+
+    if content:
+
+        save_note(content)
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+@app.post("/notes/<int:item>/delete")
+
+@protected
+
+def del_note(item):
+
+    with db() as con:
+
+        con.execute(
+
+            """
+
+            DELETE FROM notes
+
+            WHERE id=?
+
+            AND user_id=?
+
+            """,
+
+            (
+
+                item,
+
+                uid()
+
+            )
+
+        )
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+# ============================================================
+
+# TASKS
+
+# ============================================================
+
+@app.post("/tasks")
+
+@protected
+
+def add_task_route():
+
+    content = request.form.get(
+
+        "content",
+
+        ""
+
+    ).strip()
+
+    if content:
+
+        add_task(content)
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+@app.post("/tasks/<int:item>/toggle")
+
+@protected
+
+def toggle_task(item):
+
+    with db() as con:
+
+        con.execute(
+
+            """
+
+            UPDATE tasks
+
+            SET done=1-done
+
+            WHERE id=?
+
+            AND user_id=?
+
+            """,
+
+            (
+
+                item,
+
+                uid()
+
+            )
+
+        )
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+@app.post("/tasks/<int:item>/delete")
+
+@protected
+
+def del_task(item):
+
+    with db() as con:
+
+        con.execute(
+
+            """
+
+            DELETE FROM tasks
+
+            WHERE id=?
+
+            AND user_id=?
+
+            """,
+
+            (
+
+                item,
+
+                uid()
+
+            )
+
+        )
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+# ============================================================
+
+# EXPORT
+
+# ============================================================
+
+@app.get("/export")
+
+def export():
+
+    user = uid()
+
+    with db() as con:
+
+        data = {}
+
+        for table in (
+
+            "messages",
+
+            "notes",
+
+            "tasks"
+
+        ):
+
+            rows = con.execute(
+
+                f"""
+
+                SELECT *
+
+                FROM {table}
+
+                WHERE user_id=?
+
+                ORDER BY id
+
+                """,
+
+                (user,)
+
+            ).fetchall()
+
+            data[table] = [
+
+                dict(row)
+
+                for row in rows
+
+            ]
+
+    return Response(
+
+        json.dumps(
+
+            data,
+
+            ensure_ascii=False,
+
+            indent=2
+
+        ),
+
+        mimetype="application/json",
+
+        headers={
+
+            "Content-Disposition":
+
+                "attachment; filename=dean-backup.json",
+
+            "Cache-Control":
+
+                "no-store"
+
+        }
+
+    )
+
+# ============================================================
+
+# CLEAR
+
+# ============================================================
+
+@app.post("/clear")
+
+@protected
+
+def clear():
+
+    with db() as con:
+
+        for table in (
+
+            "messages",
+
+            "notes",
+
+            "tasks"
+
+        ):
+
+            con.execute(
+
+                f"""
+
+                DELETE FROM {table}
+
+                WHERE user_id=?
+
+                """,
+
+                (uid(),)
+
+            )
+
+    return redirect(
+
+        url_for("home")
+
+    )
+
+# ============================================================
+
+# HTML
+
+# ============================================================
+
+HTML = """
+
+<!doctype html>
 
 <html lang="he" dir="rtl">
 
@@ -334,23 +1732,21 @@ HTML = """<!doctype html>
 
 <meta charset="utf-8">
 
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta
 
-<title>DEAN - העוזר של בניאל</title>
+name="viewport"
+
+content="width=device-width,initial-scale=1"
+
+>
+
+<title>DEAN</title>
 
 <style>
 
-:root{
-
-font-family:system-ui,Arial;
-
-color-scheme:dark
-
-}
-
 *{
 
-box-sizing:border-box
+box-sizing:border-box;
 
 }
 
@@ -360,17 +1756,29 @@ margin:0;
 
 background:#0b1020;
 
-color:#eaf0ff
+color:#eaf0ff;
+
+font-family:system-ui,Arial;
 
 }
 
 header{
 
-padding:20px;
-
 background:#131b30;
 
-border-bottom:1px solid #29334e
+padding:20px;
+
+border-bottom:1px solid #29334e;
+
+}
+
+.wrap{
+
+max-width:1000px;
+
+margin:auto;
+
+padding:16px;
 
 }
 
@@ -378,23 +1786,7 @@ h1{
 
 margin:0;
 
-color:#83e5bb
-
-}
-
-small,.muted{
-
-color:#aebbd4
-
-}
-
-.wrap{
-
-max-width:960px;
-
-margin:auto;
-
-padding:16px
+color:#83e5bb;
 
 }
 
@@ -404,7 +1796,7 @@ display:grid;
 
 grid-template-columns:minmax(0,2fr) minmax(240px,1fr);
 
-gap:16px
+gap:16px;
 
 }
 
@@ -418,13 +1810,13 @@ border-radius:15px;
 
 padding:16px;
 
-margin-bottom:15px
+margin-bottom:15px;
 
 }
 
 .messages{
 
-height:52vh;
+height:55vh;
 
 overflow:auto;
 
@@ -432,7 +1824,7 @@ display:flex;
 
 flex-direction:column;
 
-gap:12px
+gap:12px;
 
 }
 
@@ -446,7 +1838,7 @@ padding:12px;
 
 border-radius:12px;
 
-max-width:95%
+max-width:95%;
 
 }
 
@@ -454,7 +1846,7 @@ max-width:95%
 
 background:#245f65;
 
-align-self:flex-start
+align-self:flex-start;
 
 }
 
@@ -462,11 +1854,13 @@ align-self:flex-start
 
 background:#26314b;
 
-align-self:flex-end
+align-self:flex-end;
 
 }
 
-textarea,input{
+textarea,
+
+input{
 
 width:100%;
 
@@ -480,11 +1874,13 @@ background:#0c1528;
 
 color:white;
 
-font:inherit
+font:inherit;
 
 }
 
-button,.btn{
+button,
+
+.btn{
 
 cursor:pointer;
 
@@ -504,15 +1900,17 @@ font-weight:bold;
 
 text-decoration:none;
 
-display:inline-block
+display:inline-block;
 
 }
 
-button.secondary,.btn.secondary{
+button.secondary,
+
+.btn.secondary{
 
 background:#34435f;
 
-color:white
+color:white;
 
 }
 
@@ -520,7 +1918,7 @@ button.danger{
 
 background:#793b47;
 
-color:white
+color:white;
 
 }
 
@@ -534,7 +1932,7 @@ flex-wrap:wrap;
 
 align-items:center;
 
-margin-top:10px
+margin-top:10px;
 
 }
 
@@ -544,19 +1942,19 @@ border-top:1px solid #34415c;
 
 padding:10px 0;
 
-overflow-wrap:anywhere
+overflow-wrap:anywhere;
 
 }
 
-.item form{
+.muted{
 
-display:inline
+color:#aebbd4;
 
 }
 
 .error{
 
-color:#ff9ca7
+color:#ff9ca7;
 
 }
 
@@ -568,13 +1966,7 @@ padding:10px;
 
 border-radius:9px;
 
-color:#f3d58a
-
-}
-
-a{
-
-color:#9ae4ff
+color:#f3d58a;
 
 }
 
@@ -582,13 +1974,13 @@ color:#9ae4ff
 
 .grid{
 
-grid-template-columns:1fr
+grid-template-columns:1fr;
 
 }
 
 .messages{
 
-height:43vh
+height:48vh;
 
 }
 
@@ -606,11 +1998,11 @@ height:43vh
 
 <h1>DEAN ✦</h1>
 
-<small>
+<div class="muted">
 
-העוזר האישי של בניאל · צ'אט, פתקים, משימות והכנת פוסטים
+העוזר האישי של בניאל
 
-</small>
+</div>
 
 </div>
 
@@ -620,11 +2012,11 @@ height:43vh
 
 <p class="notice">
 
-הזיכרון האוטומטי פעיל.
+דין עובד במצב שיחה טבעית.
 
-הזיכרון נשמר במסד הנתונים.
+אין צורך להשתמש בפקודות.
 
-ב-Render יש להגדיר DB_PATH על Persistent Disk כדי שהמידע יישאר גם אחרי אתחול.
+אפשר פשוט לדבר איתו.
 
 </p>
 
@@ -636,15 +2028,15 @@ height:43vh
 
 <h2>שיחה עם דין</h2>
 
-<p class="muted">
+<div
 
-פקודות:
+id="messages"
 
- /help · /status · /remember · /task · /tasks · /notes · /done · /facebook
+class="messages"
 
-</p>
+aria-live="polite"
 
-<div id="messages" class="messages" aria-live="polite">
+>
 
 {% for m in messages %}
 
@@ -666,9 +2058,25 @@ height:43vh
 
 </div>
 
-<form id="chat" method="post" action="/chat">
+<form
 
-<input type="hidden" name="csrf" value="{{csrf}}">
+id="chat"
+
+method="post"
+
+action="/chat"
+
+>
+
+<input
+
+type="hidden"
+
+name="csrf"
+
+value="{{csrf}}"
+
+>
 
 <textarea
 
@@ -682,7 +2090,7 @@ maxlength="6000"
 
 required
 
-placeholder="דבר עם דין בעברית..."
+placeholder="דבר עם דין..."
 
 ></textarea>
 
@@ -722,42 +2130,6 @@ id="read"
 
 </button>
 
-<a
-
-class="btn secondary"
-
-href="/export"
-
->
-
-ייצוא המידע שלי
-
-</a>
-
-</div>
-
-<p id="status" class="muted"></p>
-
-</form>
-
-</section>
-
-<section class="panel">
-
-<h2>פייסבוק אישי</h2>
-
-<p>
-
-בקש מדין להכין פוסט,
-
-העתק אותו ופתח את פייסבוק.
-
-הפרסום עצמו נעשה על ידך.
-
-</p>
-
-<div class="row">
-
 <button
 
 class="secondary"
@@ -768,7 +2140,7 @@ id="copy"
 
 >
 
-העתק תשובה אחרונה
+העתק תשובה
 
 </button>
 
@@ -776,19 +2148,25 @@ id="copy"
 
 class="btn secondary"
 
-href="https://www.facebook.com/"
-
-target="_blank"
-
-rel="noopener noreferrer"
+href="/export"
 
 >
 
-פתח פייסבוק ↗
+גיבוי
 
 </a>
 
 </div>
+
+<p
+
+id="status"
+
+class="muted"
+
+></p>
+
+</form>
 
 </section>
 
@@ -798,9 +2176,15 @@ rel="noopener noreferrer"
 
 <section class="panel">
 
-<h2>📌 פתקים</h2>
+<h2>📌 זיכרון</h2>
 
-<form method="post" action="/notes">
+<form
+
+method="post"
+
+action="/notes"
+
+>
 
 <input
 
@@ -828,7 +2212,7 @@ placeholder="מה דין צריך לזכור?"
 
 <button>
 
-שמור פתק
+שמור
 
 </button>
 
@@ -864,8 +2248,6 @@ value="{{csrf}}"
 
 class="danger"
 
-aria-label="מחק פתק"
-
 >
 
 ×
@@ -884,7 +2266,13 @@ aria-label="מחק פתק"
 
 <h2>☑ משימות</h2>
 
-<form method="post" action="/tasks">
+<form
+
+method="post"
+
+action="/tasks"
+
+>
 
 <input
 
@@ -912,7 +2300,7 @@ placeholder="משימה חדשה"
 
 <button>
 
-הוסף משימה
+הוסף
 
 </button>
 
@@ -924,7 +2312,7 @@ placeholder="משימה חדשה"
 
 <div class="item">
 
-{{ '✅' if t['done'] else '⬜' }}
+{{'✅' if t['done'] else '⬜'}}
 
 {{t['content']}}
 
@@ -948,9 +2336,13 @@ value="{{csrf}}"
 
 >
 
-<button class="secondary">
+<button
 
-{{'בטל סימון' if t['done'] else 'סיימתי'}}
+class="secondary"
+
+>
+
+{{'בטל' if t['done'] else 'סיימתי'}}
 
 </button>
 
@@ -974,7 +2366,11 @@ value="{{csrf}}"
 
 >
 
-<button class="danger">
+<button
+
+class="danger"
+
+>
 
 מחק
 
@@ -998,8 +2394,6 @@ value="{{csrf}}"
 
 אל תכניס סיסמאות או מפתחות API לשיחה.
 
-פעולות משמעותיות דורשות אישור מפורש.
-
 </p>
 
 <form
@@ -1008,7 +2402,7 @@ method="post"
 
 action="/clear"
 
-onsubmit="return confirm('למחוק את כל השיחות, הפתקים והמשימות שלך?')"
+onsubmit="return confirm('למחוק את כל המידע?')"
 
 >
 
@@ -1024,7 +2418,7 @@ value="{{csrf}}"
 
 <button class="danger">
 
-מחק את כל המידע שלי
+מחק הכול
 
 </button>
 
@@ -1040,91 +2434,133 @@ value="{{csrf}}"
 
 <script>
 
-const box=document.getElementById('messages');
+const box =
 
-box.scrollTop=box.scrollHeight;
+document.getElementById("messages");
 
-const form=document.getElementById('chat');
+box.scrollTop =
 
-const status=document.getElementById('status');
+box.scrollHeight;
 
-let last={{last_answer|tojson}};
+const form =
+
+document.getElementById("chat");
+
+const status =
+
+document.getElementById("status");
+
+let last =
+
+{{last_answer|tojson}};
 
 async function sendMessage(fd){
 
-let r=await fetch(
+let response =
 
-'/chat',
+await fetch(
+
+"/chat",
 
 {
 
-method:'POST',
+method:"POST",
 
 body:fd,
 
-credentials:'same-origin'
+credentials:"same-origin"
 
 }
 
 );
 
-let data=await r.json();
+let data =
+
+await response.json();
 
 if(
 
-r.status===403 &&
+response.status === 403 &&
 
-data.code==='csrf_expired'
+data.code === "csrf_expired"
 
 ){
 
-const t=await fetch(
+const tokenResponse =
 
-'/csrf',
+await fetch(
+
+"/csrf",
 
 {
 
-credentials:'same-origin',
+credentials:"same-origin",
 
-cache:'no-store'
+cache:"no-store"
 
 }
 
 );
 
-if(!t.ok)
+if(!tokenResponse.ok){
 
-throw Error('יש לרענן את העמוד');
+throw new Error(
 
-const j=await t.json();
+"יש לרענן את העמוד"
 
-form.elements.csrf.value=j.csrf;
+);
 
-fd.set('csrf',j.csrf);
+}
 
-r=await fetch(
+const token =
 
-'/chat',
+await tokenResponse.json();
+
+form.elements.csrf.value =
+
+token.csrf;
+
+fd.set(
+
+"csrf",
+
+token.csrf
+
+);
+
+response =
+
+await fetch(
+
+"/chat",
 
 {
 
-method:'POST',
+method:"POST",
 
 body:fd,
 
-credentials:'same-origin'
+credentials:"same-origin"
 
 }
 
 );
 
-data=await r.json();
+data =
+
+await response.json();
 
 }
 
-if(!r.ok)
+if(!response.ok){
 
-throw Error(data.error||'שגיאה');
+throw new Error(
+
+data.error || "שגיאה"
+
+);
+
+}
 
 return data;
 
@@ -1132,99 +2568,149 @@ return data;
 
 form.addEventListener(
 
-'submit',
+"submit",
 
-async e=>{
+async event => {
 
-e.preventDefault();
+event.preventDefault();
 
-const fd=new FormData(form);
+const fd =
 
-const message=String(
+new FormData(form);
 
-fd.get('message')||''
+const message =
+
+String(
+
+fd.get("message") || ""
 
 );
 
-if(!message.trim())
+if(!message.trim()){
 
 return;
 
-const send=document.getElementById('send');
+}
 
-send.disabled=true;
+const send =
 
-status.className='muted';
+document.getElementById("send");
 
-status.textContent='דין חושב...';
+send.disabled = true;
 
-add('user',message);
+status.className =
 
-document.getElementById('message').value='';
+"muted";
+
+status.textContent =
+
+"דין חושב...";
+
+add(
+
+"user",
+
+message
+
+);
+
+document.getElementById(
+
+"message"
+
+).value = "";
 
 try{
 
-const data=await sendMessage(fd);
+const data =
 
-last=data.answer;
+await sendMessage(fd);
 
-add('assistant',last);
+last =
 
-status.textContent=
+data.answer;
+
+add(
+
+"assistant",
+
+last
+
+);
+
+status.textContent =
 
 data.memory_saved
 
-?'נשמר בזיכרון.'
+? "נשמר בזיכרון."
 
-:'';
+: "";
 
 }
 
-catch(err){
+catch(error){
 
-status.textContent=
+status.className =
 
-'שגיאה: '+
+"error";
 
-err.message+
+status.textContent =
 
-' — נסה לרענן את העמוד';
+"שגיאה: "
 
-status.className='error';
++ error.message;
 
-document.getElementById('message').value=message;
+document.getElementById(
+
+"message"
+
+).value =
+
+message;
 
 }
 
 finally{
 
-send.disabled=false;
+send.disabled = false;
 
 }
 
 });
 
-function add(role,text){
+function add(
 
-const div=document.createElement('div');
+role,
 
-div.className='bubble '+role;
+text
 
-const b=document.createElement('b');
+){
 
-b.textContent=
+const div =
 
-role==='user'
+document.createElement("div");
 
-?'אתה'
+div.className =
 
-:'DEAN';
+"bubble " + role;
+
+const b =
+
+document.createElement("b");
+
+b.textContent =
+
+role === "user"
+
+? "אתה"
+
+: "DEAN";
 
 div.append(
 
 b,
 
-document.createElement('br'),
+document.createElement("br"),
 
 document.createTextNode(text)
 
@@ -1232,79 +2718,145 @@ document.createTextNode(text)
 
 box.append(div);
 
-box.scrollTop=box.scrollHeight;
+box.scrollTop =
+
+box.scrollHeight;
 
 }
 
-document.getElementById('copy').onclick=
+document.getElementById(
 
-async()=>{
+"copy"
 
-if(!last)
+).onclick =
 
-return alert('אין עדיין תשובה');
+async () => {
 
-try{
+if(!last){
 
-await navigator.clipboard.writeText(last);
+alert(
 
-alert('הועתק');
-
-}
-
-catch(e){
-
-alert('לא הצלחתי להעתיק');
-
-}
-
-};
-
-document.getElementById('read').onclick=()=>{
-
-if(!last)
-
-return;
-
-const u=
-
-new SpeechSynthesisUtterance(last);
-
-u.lang='he-IL';
-
-speechSynthesis.cancel();
-
-speechSynthesis.speak(u);
-
-};
-
-document.getElementById('speak').onclick=()=>{
-
-const R=
-
-window.SpeechRecognition||
-
-window.webkitSpeechRecognition;
-
-if(!R)
-
-return alert(
-
-'הדפדפן הזה לא תומך בהכתבה כאן'
+"אין עדיין תשובה"
 
 );
 
-const r=new R();
+return;
 
-r.lang='he-IL';
+}
 
-r.onresult=e=>
+try{
 
-document.getElementById('message').value=
+await navigator.clipboard.writeText(
 
-e.results[0][0].transcript;
+last
 
-r.start();
+);
+
+alert(
+
+"הועתק"
+
+);
+
+}
+
+catch(error){
+
+alert(
+
+"לא הצלחתי להעתיק"
+
+);
+
+}
+
+};
+
+document.getElementById(
+
+"read"
+
+).onclick =
+
+() => {
+
+if(!last){
+
+return;
+
+}
+
+const utterance =
+
+new SpeechSynthesisUtterance(
+
+last
+
+);
+
+utterance.lang =
+
+"he-IL";
+
+speechSynthesis.cancel();
+
+speechSynthesis.speak(
+
+utterance
+
+);
+
+};
+
+document.getElementById(
+
+"speak"
+
+).onclick =
+
+() => {
+
+const Recognition =
+
+window.SpeechRecognition ||
+
+window.webkitSpeechRecognition;
+
+if(!Recognition){
+
+alert(
+
+"הדפדפן לא תומך בהכתבה כאן"
+
+);
+
+return;
+
+}
+
+const recognition =
+
+new Recognition();
+
+recognition.lang =
+
+"he-IL";
+
+recognition.onresult =
+
+event => {
+
+document.getElementById(
+
+"message"
+
+).value =
+
+event.results[0][0].transcript;
+
+};
+
+recognition.start();
 
 };
 
@@ -1312,1043 +2864,17 @@ r.start();
 
 </body>
 
-</html>"""
+</html>
 
-@app.get("/")
+"""
 
-def home():
+# ============================================================
 
-    user = uid()
+# START
+4
+# ============================================================
 
-    with db() as con:
-
-        messages = con.execute(
-
-            """
-
-            SELECT role,content
-
-            FROM messages
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 40
-
-            """,
-
-            (user,),
-
-        ).fetchall()[::-1]
-
-        notes = con.execute(
-
-            """
-
-            SELECT id,content
-
-            FROM notes
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 30
-
-            """,
-
-            (user,),
-
-        ).fetchall()
-
-        tasks = con.execute(
-
-            """
-
-            SELECT id,content,done
-
-            FROM tasks
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 50
-
-            """,
-
-            (user,),
-
-        ).fetchall()
-
-    last_answer = next(
-
-        (
-
-            m["content"]
-
-            for m in reversed(messages)
-
-            if m["role"] == "assistant"
-
-        ),
-
-        "",
-
-    )
-
-    return render_template_string(
-
-        HTML,
-
-        messages=messages,
-
-        notes=notes,
-
-        tasks=tasks,
-
-        csrf=csrf(),
-
-        last_answer=last_answer,
-
-    )
-
-@app.get("/csrf")
-
-def refresh_csrf():
-
-    uid()
-
-    return jsonify(
-
-        csrf=csrf()
-
-    )
-
-def command_reply(message,user):
-
-    command,_,argument=message.partition(" ")
-
-    command=command.lower()
-
-    argument=argument.strip()
-
-    if command in ("/help","/commands"):
-
-        return (
-
-            "פקודות DEAN\n"
-
-            "/help — כל הפקודות\n"
-
-            "/status — יכולות קיימות\n"
-
-            "/remember טקסט — שמור זיכרון\n"
-
-            "/notes — הצג זיכרונות\n"
-
-            "/task טקסט — הוסף משימה\n"
-
-            "/tasks — הצג משימות\n"
-
-            "/done מספר — סמן משימה כבוצעה\n"
-
-            "/facebook נושא — כתוב טיוטת פוסט\n"
-
-            "אפשר גם לדבר איתי רגיל בעברית."
-
-        )
-
-    if command=="/status":
-
-        return (
-
-            "פעיל: שיחה עם AI, "
-
-            "היסטוריית שיחה, "
-
-            "זיכרון אוטומטי, "
-
-            "פתקים, "
-
-            "משימות, "
-
-            "גיבוי והכנת פוסטים.\n"
-
-            "לא מחובר: פרסום עצמאי בפייסבוק, "
-
-            "דוא״ל, יומן, גלישה עצמאית "
-
-            "ושליטה באייפד."
-
-        )
-
-    if command in ("/remember","/task"):
-
-        limit=1000 if command=="/remember" else 500
-
-        if not argument or len(argument)>limit:
-
-            return (
-
-                f"כתוב {command} ואחריו טקסט "
-
-                f"(עד {limit} תווים)."
-
-            )
-
-        if command=="/remember":
-
-            save_note(argument)
-
-            return "נשמר בזיכרון."
-
-        with db() as con:
-
-            con.execute(
-
-                """
-
-                INSERT INTO tasks(
-
-                    user_id,
-
-                    content,
-
-                    created
-
-                )
-
-                VALUES(?,?,?)
-
-                """,
-
-                (
-
-                    user,
-
-                    argument,
-
-                    now()
-
-                ),
-
-            )
-
-        return "המשימה נוספה."
-
-    if command in ("/notes","/tasks"):
-
-        table="notes" if command=="/notes" else "tasks"
-
-        with db() as con:
-
-            rows=con.execute(
-
-                "SELECT id,content"+
-
-                (",done" if table=="tasks" else "")+
-
-                f"""
-
-                FROM {table}
-
-                WHERE user_id=?
-
-                ORDER BY id DESC
-
-                LIMIT 40
-
-                """,
-
-                (user,),
-
-            ).fetchall()
-
-        return "\n".join(
-
-            f"{r['id']}. "+
-
-            (
-
-                ("✓ " if r["done"] else "□ ")
-
-                if table=="tasks"
-
-                else ""
-
-            )+
-
-            r["content"]
-
-            for r in rows
-
-        ) or "אין עדיין פריטים."
-
-    if command=="/done":
-
-        if argument.isdecimal():
-
-            with db() as con:
-
-                cur=con.execute(
-
-                    """
-
-                    UPDATE tasks
-
-                    SET done=1
-
-                    WHERE id=?
-
-                    AND user_id=?
-
-                    """,
-
-                    (
-
-                        int(argument),
-
-                        user
-
-                    ),
-
-                )
-
-            return (
-
-                "המשימה סומנה כבוצעה."
-
-                if cur.rowcount
-
-                else
-
-                "לא נמצאה משימה עם המספר הזה."
-
-            )
-
-        return (
-
-            "כתוב /tasks לקבלת מספרי המשימות "
-
-            "ואז /done מספר."
-
-        )
-
-    if command=="/facebook":
-
-        if not argument:
-
-            return (
-
-                "כתוב /facebook ואחריו "
-
-                "נושא הפוסט."
-
-            )
-
-        return (
-
-            "כתוב טיוטת פוסט קצרה בעברית "
-
-            "לפייסבוק האישי שלי בנושא: "
-
-            + argument +
-
-            ". החזר רק טיוטה לפרסום ידני."
-
-        )
-
-    return "פקודה לא מוכרת. כתוב /help."
-
-@app.post("/chat")
-
-@protected
-
-def chat():
-
-    message=request.form.get(
-
-        "message",
-
-        ""
-
-    ).strip()
-
-    if not message or len(message)>6000:
-
-        return jsonify(
-
-            error="הודעה ריקה או ארוכה מדי"
-
-        ),400
-
-    user=uid()
-
-    if message.startswith("/"):
-
-        reply=command_reply(
-
-            message,
-
-            user
-
-        )
-
-        with db() as con:
-
-            con.execute(
-
-                """
-
-                INSERT INTO messages(
-
-                    user_id,
-
-                    role,
-
-                    content,
-
-                    created
-
-                )
-
-                VALUES(?,?,?,?)
-
-                """,
-
-                (
-
-                    user,
-
-                    "user",
-
-                    message,
-
-                    now()
-
-                ),
-
-            )
-
-            con.execute(
-
-                """
-
-                INSERT INTO messages(
-
-                    user_id,
-
-                    role,
-
-                    content,
-
-                    created
-
-                )
-
-                VALUES(?,?,?,?)
-
-                """,
-
-                (
-
-                    user,
-
-                    "assistant",
-
-                    reply,
-
-                    now()
-
-                ),
-
-            )
-
-        return jsonify(
-
-            answer=reply,
-
-            memory_saved=False
-
-        )
-
-    # Automatic memory.
-
-    memories=auto_remember(
-
-        message
-
-    )
-
-    with db() as con:
-
-        history=con.execute(
-
-            """
-
-            SELECT role,content
-
-            FROM messages
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 20
-
-            """,
-
-            (user,),
-
-        ).fetchall()[::-1]
-
-        notes=con.execute(
-
-            """
-
-            SELECT content
-
-            FROM notes
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 20
-
-            """,
-
-            (user,),
-
-        ).fetchall()
-
-        tasks=con.execute(
-
-            """
-
-            SELECT content,done
-
-            FROM tasks
-
-            WHERE user_id=?
-
-            ORDER BY id DESC
-
-            LIMIT 30
-
-            """,
-
-            (user,),
-
-        ).fetchall()
-
-    instructions=(
-
-        "אתה DEAN, העוזר האישי של בניאל. "
-
-        "ענה בעברית טבעית, ברורה וקצרה. "
-
-        "אתה יכול להשתמש בזיכרונות ובמשימות שסופקו לך. "
-
-        "אל תטען שביצעת פעולה שלא ביצעת. "
-
-        "אין לך גישה עצמאית לפייסבוק, "
-
-        "לחשבונות, לגלישה חיה או לשינוי קוד. "
-
-        "פעולות משמעותיות דורשות אישור מפורש. "
-
-        "זיכרונות שמורים:\n"+
-
-        "\n".join(
-
-            "- "+n["content"]
-
-            for n in notes
-
-        )+
-
-        "\nמשימות:\n"+
-
-        "\n".join(
-
-            (
-
-                "[בוצע] "
-
-                if t["done"]
-
-                else
-
-                "[פתוח] "
-
-            )+
-
-            t["content"]
-
-            for t in tasks
-
-        )
-
-    )
-
-    try:
-
-        response=client.responses.create(
-
-            model=MODEL,
-
-            instructions=instructions,
-
-            input=[
-
-                {
-
-                    "role":m["role"],
-
-                    "content":m["content"]
-
-                }
-
-                for m in history
-
-            ]+
-
-            [
-
-                {
-
-                    "role":"user",
-
-                    "content":message
-
-                }
-
-            ],
-
-            max_output_tokens=1200,
-
-        )
-
-        answer=(
-
-            response.output_text.strip()
-
-            or
-
-            "לא התקבלה תשובה. נסה שוב."
-
-        )
-
-    except Exception:
-
-        app.logger.exception(
-
-            "OpenAI request failed"
-
-        )
-
-        return jsonify(
-
-            error=(
-
-                "לא הצלחתי להתחבר "
-
-                "למודל כרגע. "
-
-                "נסה שוב מאוחר יותר."
-
-            )
-
-        ),502
-
-    with db() as con:
-
-        con.execute(
-
-            """
-
-            INSERT INTO messages(
-
-                user_id,
-
-                role,
-
-                content,
-
-                created
-
-            )
-
-            VALUES(?,?,?,?)
-
-            """,
-
-            (
-
-                user,
-
-                "user",
-
-                message,
-
-                now()
-
-            ),
-
-        )
-
-        con.execute(
-
-            """
-
-            INSERT INTO messages(
-
-                user_id,
-
-                role,
-
-                content,
-
-                created
-
-            )
-
-            VALUES(?,?,?,?)
-
-            """,
-
-            (
-
-                user,
-
-                "assistant",
-
-                answer,
-
-                now()
-
-            ),
-
-        )
-
-    return jsonify(
-
-        answer=answer,
-
-        memory_saved=bool(memories)
-
-    )
-
-@app.post("/notes")
-
-@protected
-
-def add_note():
-
-    content=request.form.get(
-
-        "content",
-
-        ""
-
-    ).strip()
-
-    if content and len(content)<=1000:
-
-        save_note(
-
-            content
-
-        )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-@app.post("/notes/<int:item>/delete")
-
-@protected
-
-def del_note(item):
-
-    with db() as con:
-
-        con.execute(
-
-            """
-
-            DELETE FROM notes
-
-            WHERE id=?
-
-            AND user_id=?
-
-            """,
-
-            (
-
-                item,
-
-                uid()
-
-            ),
-
-        )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-@app.post("/tasks")
-
-@protected
-
-def add_task():
-
-    content=request.form.get(
-
-        "content",
-
-        ""
-
-    ).strip()
-
-    if content and len(content)<=500:
-
-        with db() as con:
-
-            con.execute(
-
-                """
-
-                INSERT INTO tasks(
-
-                    user_id,
-
-                    content,
-
-                    created
-
-                )
-
-                VALUES(?,?,?)
-
-                """,
-
-                (
-
-                    uid(),
-
-                    content,
-
-                    now()
-
-                ),
-
-            )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-@app.post("/tasks/<int:item>/toggle")
-
-@protected
-
-def toggle_task(item):
-
-    with db() as con:
-
-        con.execute(
-
-            """
-
-            UPDATE tasks
-
-            SET done=1-done
-
-            WHERE id=?
-
-            AND user_id=?
-
-            """,
-
-            (
-
-                item,
-
-                uid()
-
-            ),
-
-        )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-@app.post("/tasks/<int:item>/delete")
-
-@protected
-
-def del_task(item):
-
-    with db() as con:
-
-        con.execute(
-
-            """
-
-            DELETE FROM tasks
-
-            WHERE id=?
-
-            AND user_id=?
-
-            """,
-
-            (
-
-                item,
-
-                uid()
-
-            ),
-
-        )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-@app.get("/export")
-
-def export():
-
-    user=uid()
-
-    with db() as con:
-
-        data={
-
-            name:[
-
-                dict(r)
-
-                for r in con.execute(
-
-                    f"""
-
-                    SELECT *
-
-                    FROM {name}
-
-                    WHERE user_id=?
-
-                    ORDER BY id
-
-                    """,
-
-                    (user,),
-
-                ).fetchall()
-
-            ]
-
-            for name
-
-            in (
-
-                "messages",
-
-                "notes",
-
-                "tasks"
-
-            )
-
-        }
-
-    return Response(
-
-        json.dumps(
-
-            data,
-
-            ensure_ascii=False,
-
-            indent=2
-
-        ),
-
-        mimetype="application/json",
-
-        headers={
-
-            "Content-Disposition":
-
-                "attachment; filename=dean-backup.json",
-
-            "Cache-Control":
-
-                "no-store",
-
-        },
-
-    )
-
-@app.post("/clear")
-
-@protected
-
-def clear():
-
-    with db() as con:
-
-        for name in (
-
-            "messages",
-
-            "notes",
-
-            "tasks"
-
-        ):
-
-            con.execute(
-
-                f"""
-
-                DELETE FROM {name}
-
-                WHERE user_id=?
-
-                """,
-
-                (uid(),)
-
-            )
-
-    return redirect(
-
-        url_for("home")
-
-    )
-
-if __name__=="__main__":
+if __name__ == "__main__":
 
     app.run(
 
@@ -2364,6 +2890,6 @@ if __name__=="__main__":
 
             )
 
-        ),
+        )
 
     )
