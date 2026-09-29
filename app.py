@@ -38,7 +38,7 @@ from openai import OpenAI
 
 # ============================================================
 
-# DEAN - Personal Assistant
+# DEAN
 
 # ============================================================
 
@@ -50,7 +50,11 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 if not OPENAI_API_KEY:
 
-    raise RuntimeError("Set OPENAI_API_KEY in Render Environment")
+    raise RuntimeError(
+
+        "Set OPENAI_API_KEY in Render Environment"
+
+    )
 
 SECRET_KEY = os.environ.get("SECRET_KEY")
 
@@ -58,7 +62,13 @@ if not SECRET_KEY:
 
     SECRET_KEY = hashlib.sha256(
 
-        ("dean-session-v3:" + OPENAI_API_KEY).encode()
+        (
+
+            "dean-session-v4:"
+
+            + OPENAI_API_KEY
+
+        ).encode()
 
     ).hexdigest()
 
@@ -76,7 +86,11 @@ app.config.update(
 
 )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(
+
+    api_key=OPENAI_API_KEY
+
+)
 
 MODEL = os.environ.get(
 
@@ -106,7 +120,13 @@ def db():
 
     if parent:
 
-        os.makedirs(parent, exist_ok=True)
+        os.makedirs(
+
+            parent,
+
+            exist_ok=True
+
+        )
 
     con = sqlite3.connect(
 
@@ -120,9 +140,17 @@ def db():
 
     con.row_factory = sqlite3.Row
 
-    con.execute("PRAGMA busy_timeout=30000")
+    con.execute(
 
-    con.execute("PRAGMA journal_mode=WAL")
+        "PRAGMA busy_timeout=30000"
+
+    )
+
+    con.execute(
+
+        "PRAGMA journal_mode=WAL"
+
+    )
 
     con.execute("""
 
@@ -146,7 +174,7 @@ def db():
 
         CREATE INDEX IF NOT EXISTS msg_user_idx
 
-        ON messages(user_id, id)
+        ON messages(user_id,id)
 
     """)
 
@@ -170,7 +198,7 @@ def db():
 
         CREATE INDEX IF NOT EXISTS note_user_idx
 
-        ON notes(user_id, id)
+        ON notes(user_id,id)
 
     """)
 
@@ -196,7 +224,7 @@ def db():
 
         CREATE INDEX IF NOT EXISTS task_user_idx
 
-        ON tasks(user_id, id)
+        ON tasks(user_id,id)
 
     """)
 
@@ -206,7 +234,7 @@ def db():
 
 # ============================================================
 
-# SESSION / SECURITY
+# BASIC HELPERS
 
 # ============================================================
 
@@ -234,7 +262,13 @@ def protected(fn):
 
             request.form.get("csrf", "")
 
-            or request.headers.get("X-CSRF-Token", "")
+            or request.headers.get(
+
+                "X-CSRF-Token",
+
+                ""
+
+            )
 
         )
 
@@ -254,7 +288,13 @@ def protected(fn):
 
                 return jsonify(
 
-                    error="Session refreshed. Please try again.",
+                    error=(
+
+                        "Session refreshed. "
+
+                        "Please try again."
+
+                    ),
 
                     code="csrf_expired"
 
@@ -388,6 +428,14 @@ def auto_remember(text):
 
         "תזכרי",
 
+        "תשמור",
+
+        "תשמרי",
+
+        "שמור",
+
+        "שמרי",
+
         "מהיום",
 
         "מעכשיו",
@@ -422,45 +470,57 @@ def auto_remember(text):
 
     if not any(
 
-        x in lower
+        trigger in lower
 
-        for x in triggers
+        for trigger in triggers
 
     ):
 
         return False
 
-    if lower.startswith(
+    memory = text
 
-        ("תזכור", "תזכרי")
+    prefixes = (
 
-    ):
+        "תזכור ",
 
-        parts = text.split(
+        "תזכרי ",
 
-            " ",
+        "תשמור ",
 
-            1
+        "תשמרי ",
 
-        )
+        "שמור ",
 
-        if len(parts) == 2:
+        "שמרי ",
 
-            memory = parts[1].strip()
+    )
 
-        else:
+    for prefix in prefixes:
 
-            memory = ""
+        if lower.startswith(
 
-    else:
+            prefix.lower()
 
-        memory = text
+        ):
+
+            memory = text[
+
+                len(prefix):
+
+            ].strip()
+
+            break
 
     if not memory:
 
         return False
 
-    return save_note(memory)
+    return save_note(
+
+        memory[:1000]
+
+    )
 
 # ============================================================
 
@@ -522,7 +582,11 @@ def add_task(content):
 
 def command_reply(message):
 
-    command, _, argument = message.partition(" ")
+    command, _, argument = (
+
+        message.partition(" ")
+
+    )
 
     command = command.lower().strip()
 
@@ -538,9 +602,9 @@ def command_reply(message):
 
         return (
 
-            "אני יכול לדבר איתך רגיל.\n\n"
+            "אפשר פשוט לדבר איתי רגיל.\n\n"
 
-            "אפשר גם להשתמש בפקודות:\n"
+            "פקודות זמינות:\n"
 
             "/status\n"
 
@@ -566,17 +630,17 @@ def command_reply(message):
 
             "שיחה טבעית: פעילה\n"
 
-            "זיכרון: פעיל\n"
+            "היסטוריה: פעילה\n"
 
-            "היסטוריית שיחה: פעילה\n"
+            "זיכרון קבוע: פעיל\n"
 
             "פתקים: פעילים\n"
 
             "משימות: פעילות\n"
 
-            "חיפוש אינטרנט: זמין למודל\n"
+            "חיפוש אינטרנט: פעיל\n"
 
-            "פייסבוק אוטומטי: עדיין לא מחובר\n"
+            "פייסבוק: עדיין לא מחובר ישירות\n"
 
             "שליטה באייפד: עדיין לא מחוברת"
 
@@ -586,13 +650,25 @@ def command_reply(message):
 
         if not argument:
 
-            return "כתוב אחרי /remember מה אתה רוצה שאזכור."
+            return (
+
+                "כתוב אחרי /remember "
+
+                "מה אתה רוצה שאזכור."
+
+            )
 
         if save_note(argument):
 
-            return "זכרתי."
+            return "זכרתי ושמרתי את זה."
 
-        return "המידע כבר שמור או שהוא ארוך מדי."
+        return (
+
+            "המידע כבר שמור "
+
+            "או שהוא ארוך מדי."
+
+        )
 
     if command == "/notes":
 
@@ -602,7 +678,7 @@ def command_reply(message):
 
                 """
 
-                SELECT id, content
+                SELECT id,content
 
                 FROM notes
 
@@ -620,13 +696,19 @@ def command_reply(message):
 
         if not rows:
 
-            return "אין לי עדיין זיכרונות שמורים."
+            return (
+
+                "אין לי עדיין "
+
+                "זיכרונות שמורים."
+
+            )
 
         return "\n".join(
 
-            f"{r['id']}. {r['content']}"
+            f"{row['id']}. {row['content']}"
 
-            for r in rows
+            for row in rows
 
         )
 
@@ -634,13 +716,25 @@ def command_reply(message):
 
         if not argument:
 
-            return "כתוב אחרי /task את המשימה."
+            return (
+
+                "כתוב אחרי /task "
+
+                "את המשימה."
+
+            )
 
         if add_task(argument):
 
-            return "הוספתי את המשימה."
+            return "המשימה נוספה."
 
-        return "לא הצלחתי להוסיף את המשימה."
+        return (
+
+            "לא הצלחתי להוסיף "
+
+            "את המשימה."
+
+        )
 
     if command == "/tasks":
 
@@ -650,7 +744,7 @@ def command_reply(message):
 
                 """
 
-                SELECT id, content, done
+                SELECT id,content,done
 
                 FROM tasks
 
@@ -674,15 +768,15 @@ def command_reply(message):
 
             (
 
-                f"{r['id']}. "
+                f"{row['id']}. "
 
-                f"{'✅' if r['done'] else '⬜'} "
+                f"{'✅' if row['done'] else '⬜'} "
 
-                f"{r['content']}"
+                f"{row['content']}"
 
             )
 
-            for r in rows
+            for row in rows
 
         )
 
@@ -690,7 +784,13 @@ def command_reply(message):
 
         if not argument.isdecimal():
 
-            return "כתוב /done ואחריו מספר משימה."
+            return (
+
+                "כתוב /done "
+
+                "ואחריו מספר משימה."
+
+            )
 
         with db() as con:
 
@@ -720,21 +820,39 @@ def command_reply(message):
 
         if cur.rowcount:
 
-            return "סימנתי את המשימה כבוצעה."
+            return (
 
-        return "לא מצאתי את המשימה."
+                "סימנתי את המשימה "
+
+                "כבוצעה."
+
+            )
+
+        return (
+
+            "לא מצאתי את המשימה."
+
+        )
 
     if command == "/facebook":
 
         if not argument:
 
-            return "כתוב /facebook ואחריו נושא."
+            return (
+
+                "כתוב /facebook "
+
+                "ואחריו נושא."
+
+            )
 
         return (
 
-            "כתוב פוסט קצר וטבעי בעברית "
+            "כתוב פוסט קצר וטבעי "
 
-            "לפייסבוק האישי שלי בנושא: "
+            "בעברית לפייסבוק "
+
+            "בנושא: "
 
             + argument
 
@@ -746,7 +864,7 @@ def command_reply(message):
 
 # ============================================================
 
-# SYSTEM INSTRUCTIONS
+# DEAN PERSONALITY / INSTRUCTIONS
 
 # ============================================================
 
@@ -756,83 +874,283 @@ SYSTEM_INSTRUCTIONS = """
 
 אתה העוזר האישי של בניאל.
 
-הדבר החשוב ביותר הוא שיחה טבעית.
+המטרה שלך היא לנהל עם בניאל שיחה טבעית ורציפה.
 
-אל תנהל את השיחה כמו תפריט.
+אל תתנהג כמו תפריט.
 
-אל תציג רשימת אפשרויות אחרי כל הודעה.
+אל תציג אפשרויות בכל הודעה.
 
-אל תשאל "איזה מהבאים אתה רוצה?" אם אפשר להבין את הכוונה מההקשר.
+אל תציע רשימת אפשרויות אם בניאל לא ביקש אותה.
 
-דבר עם בניאל כמו עוזר אישי אמיתי:
+אל תשאל "איזה מהבאים אתה רוצה?" כאשר אפשר להבין את הכוונה.
 
-- קצר
+דבר איתו כמו עוזר אישי אמיתי.
 
-- ברור
+ענה בעברית טבעית.
 
-- טבעי
+היה ברור.
 
-- בעברית
+היה ישיר.
 
-- ישיר
+היה קצר כשאפשר.
 
-- בלי סיפורים
+אל תחזור על עצמך.
 
-- בלי תפריטים מיותרים
+אל תסבך דברים פשוטים.
 
-אם בניאל אומר משהו רגיל, פשוט תנהל איתו שיחה.
+אם בניאל אומר:
 
-אם הוא שואל שאלה, ענה עליה.
+"היי דין"
 
-אם הוא מבקש מידע עדכני, השתמש בחיפוש האינטרנט כאשר הוא זמין.
+ענה לו כמו בן אדם.
 
-אם אין לך מידע מספיק, תגיד את זה ולא תמציא.
+אם בניאל אומר:
 
-אם פעולה דורשת חיבור חיצוני שאין לך, אל תעמיד פנים שביצעת אותה.
+"מה נשמע?"
 
-לעולם אל תגיד שביצעת פעולה אם בפועל לא ביצעת אותה.
+ענה לו כמו בן אדם.
 
-יש לך גישה לזיכרונות ולמשימות שנמסרו לך בהודעה.
+אם בניאל מספר משהו,
 
-כאשר בניאל אומר בצורה ברורה שהוא רוצה שתזכור משהו,
+המשך את השיחה באופן טבעי.
 
-המערכת יכולה לשמור אותו בזיכרון.
+אם בניאל שואל שאלה,
 
-כאשר בניאל רק מספר משהו בשיחה,
+ענה על השאלה.
 
-אל תהפוך כל משפט לזיכרון.
+אם הוא מבקש לבצע פעולה,
 
-אל תבקש סיסמאות או מפתחות API בשיחה.
+בדוק האם יש לך כלי מתאים.
 
-פעולות חיצוניות משמעותיות דורשות אישור מפורש.
+אם אין לך כלי מתאים,
 
-המטרה היא שבהמשך ניתן יהיה לחבר אליך:
+תגיד את זה ישירות.
 
-- חיפוש
+לעולם אל תטען שביצעת פעולה
 
-- קבצים
+אם לא ביצעת אותה בפועל.
+
+========================
+
+זיכרון
+
+========================
+
+המערכת שומרת היסטוריית שיחה במסד הנתונים.
+
+המערכת שומרת גם זיכרונות קבועים
+
+במסד הנתונים תחת "הזיכרונות של בניאל".
+
+כאשר מידע מופיע תחת
+
+"הזיכרונות של בניאל",
+
+זהו זיכרון קבוע.
+
+אל תגיד שהזיכרון ייעלם
+
+ברענון הדפדפן אם הוא מופיע
+
+ברשימת הזיכרונות.
+
+אל תגיד שהיסטוריית השיחה
+
+נעלמת ברענון אם היא מופיעה
+
+בהיסטוריה שסופקה לך.
+
+כאשר בניאל אומר:
+
+"תזכור..."
+
+"תזכרי..."
+
+"תשמור..."
+
+"תשמרי..."
+
+"שמור..."
+
+"שמרי..."
+
+"מהיום..."
+
+"מעכשיו..."
+
+או אומר בצורה ברורה
+
+שהוא רוצה שתזכור מידע,
+
+המערכת עשויה לשמור אותו
+
+באופן אוטומטי.
+
+אם המידע נשמר,
+
+אל תשאל שוב אם הוא רוצה לשמור.
+
+לדוגמה:
+
+בניאל:
+
+"תזכור שהמילה הסודית היא בננה."
+
+תשובה נכונה:
+
+"סבבה, זכרתי."
+
+לא נכון:
+
+"רוצה שאשמור את זה?"
+
+לא נכון:
+
+"רוצה שזה יהיה רק לשיחה?"
+
+לא נכון:
+
+"אם תרצה אני יכול לשמור."
+
+כאשר בניאל שואל:
+
+"אתה זוכר?"
+
+בדוק את ההיסטוריה
+
+ואת הזיכרונות שסופקו לך
+
+וענה בהתאם.
+
+אם המידע נמצא שם,
+
+תגיד שאתה זוכר אותו.
+
+אם הוא לא נמצא,
+
+אל תמציא.
+
+אל תיתן נאומי אבטחה
+
+כאשר אין צורך בהם.
+
+אם בניאל מנסה לשמור
+
+סיסמה אמיתית,
+
+מפתח API או מידע אבטחה רגיש,
+
+הזהר אותו בקצרה.
+
+========================
+
+היסטוריית שיחה
+
+========================
+
+היסטוריית השיחה שסופקה לך
+
+היא חלק מהשיחה עם בניאל.
+
+השתמש בהקשר הקודם.
+
+אל תתייחס לכל הודעה כאילו
+
+היא שיחה חדשה.
+
+אל תחזור לשאול דבר
+
+שכבר נענה בהיסטוריה.
+
+========================
+
+חיפוש מידע
+
+========================
+
+כאשר בניאל מבקש מידע עדכני,
+
+חדשות,
+
+מחירים,
+
+מוצרים,
+
+אתרים,
+
+חברות,
+
+אירועים,
+
+או מידע שיכול להשתנות,
+
+השתמש בחיפוש האינטרנט
+
+כאשר כלי החיפוש זמין.
+
+כאשר אין צורך בחיפוש,
+
+אל תחפש סתם.
+
+========================
+
+יכולות
+
+========================
+
+כרגע יש לך:
+
+- שיחה עם AI
+
+- היסטוריית שיחה
+
+- זיכרון קבוע
+
+- פתקים
+
+- משימות
+
+- חיפוש אינטרנט
+
+יכולות נוספות כמו:
+
+- פייסבוק
+
+- WhatsApp
 
 - אימייל
 
 - יומן
 
-- פייסבוק
+- גלישה אוטומטית
 
-- שירותים חיצוניים
+- שליטה באייפד
 
-- APIs
+- שליחת הודעות
+
+- ביצוע פעולות באתרים
+
+- APIs חיצוניים
 
 - אוטומציות
 
-- כלים נוספים
+דורשות חיבור וכלי מתאים.
 
-כאשר כלי אינו מחובר, תגיד שהוא עדיין לא מחובר.
+אל תטען שהן מחוברות
+
+אם הן לא מחוברות.
+
+המטרה היא לבנות את DEAN
+
+בהדרגה כעוזר אישי אמיתי
+
+עם כלים וחיבורים נוספים.
 
 """
 
 # ============================================================
 
-# MAIN CHAT
+# CHAT
 
 # ============================================================
 
@@ -868,15 +1186,19 @@ def chat():
 
     user = uid()
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    # Explicit commands only
+    # Commands
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     if message.startswith("/"):
 
-        reply = command_reply(message)
+        reply = command_reply(
+
+            message
+
+        )
 
         if reply is not None:
 
@@ -958,11 +1280,11 @@ def chat():
 
             )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     # Automatic memory
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     memory_saved = auto_remember(
 
@@ -970,11 +1292,11 @@ def chat():
 
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    # Load context
+    # Load history and memory
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     with db() as con:
 
@@ -982,7 +1304,7 @@ def chat():
 
             """
 
-            SELECT role, content
+            SELECT role,content
 
             FROM messages
 
@@ -990,7 +1312,7 @@ def chat():
 
             ORDER BY id DESC
 
-            LIMIT 30
+            LIMIT 40
 
             """,
 
@@ -1010,7 +1332,7 @@ def chat():
 
             ORDER BY id DESC
 
-            LIMIT 30
+            LIMIT 50
 
             """,
 
@@ -1022,7 +1344,7 @@ def chat():
 
             """
 
-            SELECT content, done
+            SELECT content,done
 
             FROM tasks
 
@@ -1040,9 +1362,9 @@ def chat():
 
     memory_text = "\n".join(
 
-        "- " + n["content"]
+        "- " + row["content"]
 
-        for n in notes
+        for row in notes
 
     )
 
@@ -1056,17 +1378,17 @@ def chat():
 
                 "[בוצע] "
 
-                if t["done"]
+                if row["done"]
 
                 else "[פתוח] "
 
             )
 
-            + t["content"]
+            + row["content"]
 
         )
 
-        for t in tasks
+        for row in tasks
 
     )
 
@@ -1104,19 +1426,17 @@ def chat():
 
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    # Build model input
+    # Build conversation
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     model_input = []
 
-    for item in history:
+    for row in history:
 
-        role = item["role"]
-
-        if role not in (
+        if row["role"] not in (
 
             "user",
 
@@ -1130,9 +1450,9 @@ def chat():
 
             {
 
-                "role": role,
+                "role": row["role"],
 
-                "content": item["content"]
+                "content": row["content"]
 
             }
 
@@ -1150,11 +1470,11 @@ def chat():
 
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    # OpenAI
+    # OpenAI Responses API
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     try:
 
@@ -1206,19 +1526,17 @@ def chat():
 
                 "לא הצלחתי להתחבר "
 
-                "למודל כרגע. "
-
-                "נסה שוב."
+                "למודל כרגע. נסה שוב."
 
             )
 
         ), 502
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     # Save conversation
 
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     with db() as con:
 
@@ -1294,7 +1612,11 @@ def chat():
 
         answer=answer,
 
-        memory_saved=bool(memory_saved)
+        memory_saved=bool(
+
+            memory_saved
+
+        )
 
     )
 
@@ -1316,7 +1638,7 @@ def home():
 
             """
 
-            SELECT role, content
+            SELECT role,content
 
             FROM messages
 
@@ -1336,7 +1658,7 @@ def home():
 
             """
 
-            SELECT id, content
+            SELECT id,content
 
             FROM notes
 
@@ -1356,7 +1678,7 @@ def home():
 
             """
 
-            SELECT id, content, done
+            SELECT id,content,done
 
             FROM tasks
 
@@ -1376,11 +1698,11 @@ def home():
 
         (
 
-            m["content"]
+            row["content"]
 
-            for m in reversed(messages)
+            for row in reversed(messages)
 
-            if m["role"] == "assistant"
+            if row["role"] == "assistant"
 
         ),
 
@@ -1740,7 +2062,7 @@ content="width=device-width,initial-scale=1"
 
 >
 
-<title>DEAN</title>
+<title>DEAN - העוזר של בניאל</title>
 
 <style>
 
@@ -1764,9 +2086,9 @@ font-family:system-ui,Arial;
 
 header{
 
-background:#131b30;
-
 padding:20px;
+
+background:#131b30;
 
 border-bottom:1px solid #29334e;
 
@@ -2012,11 +2334,9 @@ height:48vh;
 
 <p class="notice">
 
-דין עובד במצב שיחה טבעית.
+פשוט דבר עם דין.
 
 אין צורך להשתמש בפקודות.
-
-אפשר פשוט לדבר איתו.
 
 </p>
 
@@ -2336,11 +2656,7 @@ value="{{csrf}}"
 
 >
 
-<button
-
-class="secondary"
-
->
+<button class="secondary">
 
 {{'בטל' if t['done'] else 'סיימתי'}}
 
@@ -2366,11 +2682,7 @@ value="{{csrf}}"
 
 >
 
-<button
-
-class="danger"
-
->
+<button class="danger">
 
 מחק
 
@@ -2436,7 +2748,11 @@ value="{{csrf}}"
 
 const box =
 
-document.getElementById("messages");
+document.getElementById(
+
+"messages"
+
+);
 
 box.scrollTop =
 
@@ -2444,11 +2760,19 @@ box.scrollHeight;
 
 const form =
 
-document.getElementById("chat");
+document.getElementById(
+
+"chat"
+
+);
 
 const status =
 
-document.getElementById("status");
+document.getElementById(
+
+"status"
+
+);
 
 let last =
 
@@ -2594,7 +2918,11 @@ return;
 
 const send =
 
-document.getElementById("send");
+document.getElementById(
+
+"send"
+
+);
 
 send.disabled = true;
 
@@ -2688,7 +3016,11 @@ text
 
 const div =
 
-document.createElement("div");
+document.createElement(
+
+"div"
+
+);
 
 div.className =
 
@@ -2696,7 +3028,11 @@ div.className =
 
 const b =
 
-document.createElement("b");
+document.createElement(
+
+"b"
+
+);
 
 b.textContent =
 
@@ -2752,11 +3088,7 @@ last
 
 );
 
-alert(
-
-"הועתק"
-
-);
+alert("הועתק");
 
 }
 
@@ -2871,7 +3203,7 @@ recognition.start();
 # ============================================================
 
 # START
-4
+
 # ============================================================
 
 if __name__ == "__main__":
